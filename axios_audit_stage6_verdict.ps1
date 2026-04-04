@@ -103,8 +103,17 @@ foreach ($path in ($allPaths.Keys | Sort-Object)) {
             [void]$reasons.Add("関連侵害パッケージ ($($mf.Pattern)) が見つかりました")
         }
         if ($mf.Severity -eq 'NeedsReview' -and $mf.Pattern -match 'node_modules.*axios') {
-            if ($verdict -eq 'Clean') { $verdict = 'NeedsReview' }
-            [void]$reasons.Add("node_modules/axios が存在（バージョン確認が必要）")
+            $axiosConfirmedSafe = $false
+            foreach ($vf in @($versions | Where-Object { $_.RepoPath -eq $path })) {
+                if ($vf.Status -eq 'ObservedVersion' -or $vf.Status -eq 'NoAxiosResolved') {
+                    $axiosConfirmedSafe = $true
+                    break
+                }
+            }
+            if (-not $axiosConfirmedSafe) {
+                if ($verdict -eq 'Clean') { $verdict = 'NeedsReview' }
+                [void]$reasons.Add("node_modules/axios が存在（バージョン確認が必要）")
+            }
         }
     }
 
