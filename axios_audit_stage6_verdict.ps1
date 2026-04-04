@@ -104,7 +104,10 @@ foreach ($path in ($allPaths.Keys | Sort-Object)) {
         }
         if ($mf.Severity -eq 'NeedsReview' -and $mf.Pattern -match 'node_modules.*axios') {
             $axiosConfirmedSafe = $false
-            foreach ($vf in @($versions | Where-Object { $_.RepoPath -eq $path })) {
+            # 完全一致またはサブディレクトリの Stage 3 結果も含めて確認
+            # （親リポジトリの RepoPath と worktree 等の子パスの粒度が異なるため）
+            $pathWithSep = $path.TrimEnd('\') + '\'
+            foreach ($vf in @($versions | Where-Object { $_.RepoPath -eq $path -or $_.RepoPath.StartsWith($pathWithSep) })) {
                 if ($vf.Status -eq 'ObservedVersion' -or $vf.Status -eq 'NoAxiosResolved') {
                     $axiosConfirmedSafe = $true
                     break
