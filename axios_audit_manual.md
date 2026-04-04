@@ -593,6 +593,57 @@ nvm use lts
 
 アップグレード後に再度 `npm config set min-release-age 7` を実行してください。なお、`min-release-age` が使えなくても `ignore-scripts true` だけで今回の攻撃は防げます。両方設定するのが理想ですが、まずは `ignore-scripts` を優先してください。
 
+### Q. `npm audit` や `npm install` で脆弱性の警告が出ました。どう対応すればいいですか？
+
+防御設定を適用した後、既存のプロジェクトで `npm install` や `npm update` を実行すると、以下のようなメッセージが出ることがあります。
+
+```
+6 vulnerabilities (2 moderate, 4 high)
+```
+
+これは npm が依存パッケージの既知の脆弱性を検出した結果です。今回の axios 侵害とは無関係な、一般的なセキュリティ警告です。
+
+**確認方法：**
+
+```
+npm audit
+```
+
+脆弱性の一覧と、影響を受けるパッケージ・深刻度・修正バージョンが表示されます。
+
+**対応方法（段階的に）：**
+
+```
+# 1. 互換性を壊さない範囲で自動修正を試す
+npm audit fix
+
+# 2. メジャーバージョンの変更を許容して修正する場合（破壊的変更の可能性あり）
+npm audit fix --force
+```
+
+`--force` を使うと依存パッケージのメジャーバージョンが上がる場合があります。アプリが動かなくなる可能性があるので、実行前に `npm audit` で内容を確認してください。
+
+**`min-release-age` との競合：**
+
+`min-release-age 7` を設定している場合、修正バージョンが公開から7日以内だと以下のようなエラーになります。
+
+```
+npm error notarget No matching version found for パッケージ名@x.y.z
+with a date before ...
+```
+
+この場合は `min-release-age` を一時的に無効にして修正を適用してください：
+
+```
+npm audit fix --min-release-age=0
+```
+
+**対応しなくてよい場合：**
+
+- `npm audit` の結果が `0 vulnerabilities` であれば何もする必要はありません
+- 深刻度が `low` や `moderate` で、かつ開発用の依存（devDependencies）だけが対象の場合は、急いで対応する必要はありません
+- 他者のプロジェクト（clone したもの）では、自分で `npm audit fix` を実行するよりも、upstream の更新を待つほうが安全です
+
 ---
 
 ## 既知の制限
