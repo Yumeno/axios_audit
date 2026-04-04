@@ -566,6 +566,27 @@ npx can-i-ignore-scripts
 npm install パッケージ名 --min-release-age=0
 ```
 
+### Q. `npm config set min-release-age 7` がエラーになります。
+
+`min-release-age` は npm v11.10 以降で追加された機能です。お使いの npm が古い場合はエラーになります。
+
+```
+npm --version
+```
+
+でバージョンを確認し、古い場合は Node.js ごとアップグレードしてください：
+
+```
+# Node.js 公式サイトから LTS 版をインストール（npm も同梱）
+https://nodejs.org/
+
+# または nvm-windows を使っている場合
+nvm install lts
+nvm use lts
+```
+
+アップグレード後に再度 `npm config set min-release-age 7` を実行してください。なお、`min-release-age` が使えなくても `ignore-scripts true` だけで今回の攻撃は防げます。両方設定するのが理想ですが、まずは `ignore-scripts` を優先してください。
+
 ---
 
 ## 既知の制限
