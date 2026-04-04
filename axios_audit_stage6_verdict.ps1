@@ -208,7 +208,7 @@ if ($systemCompromised) {
 [void]$report.Add("  - 侵害確定:   $countCompromised 件")
 [void]$report.Add("  - 要確認:     $countNeedsReview 件")
 [void]$report.Add("  - 要強化:     $countHardening 件")
-[void]$report.Add("  - 白寄り:     $countClean 件")
+[void]$report.Add("  - 対策不要:   $countClean 件")
 [void]$report.Add("  - システム IOC: $($highIocs.Count) 件")
 if (-not $wslExists) {
     [void]$report.Add("  - WSL 確認:    未実施（Stage 5 未実行）")
@@ -244,12 +244,12 @@ foreach ($v in ($verdictResults | Sort-Object Verdict, Path)) {
         'Compromised' { '[侵害確定]' }
         'NeedsReview' { '[要確認]  ' }
         'Hardening'   { '[要強化]  ' }
-        'Clean'       { '[白]      ' }
+        'Clean'       { '[対策不要]' }
     }
     $ownerTag = switch ($v.Ownership) {
-        'Mine'       { '(自分)' }
-        'ThirdParty' { '(他者)' }
-        default      { '(不明)' }
+        'Mine'       { '(自作)' }
+        'ThirdParty' { '(他作)' }
+        default      { '(作者不明)' }
     }
     [void]$report.Add("  $icon $ownerTag $($v.Path)")
     if ($v.Reasons) {
@@ -395,7 +395,7 @@ Write-Host ''
 Write-Host "  侵害確定: $countCompromised 件" -ForegroundColor $(if ($countCompromised -gt 0) { 'Red' } else { 'Green' })
 Write-Host "  要確認:   $countNeedsReview 件" -ForegroundColor $(if ($countNeedsReview -gt 0) { 'Yellow' } else { 'Green' })
 Write-Host "  要強化:   $countHardening 件" -ForegroundColor $(if ($countHardening -gt 0) { 'Yellow' } else { 'Green' })
-Write-Host "  白寄り:   $countClean 件" -ForegroundColor Green
+Write-Host "  対策不要: $countClean 件" -ForegroundColor Green
 Write-Host "  IOC:      $($highIocs.Count) 件" -ForegroundColor $(if ($highIocs.Count -gt 0) { 'Red' } else { 'Green' })
 Write-Host ''
 if ($systemCompromised -or $countCompromised -gt 0) {
