@@ -381,6 +381,39 @@ foreach ($sr in $stageResults) {
 }
 
 Write-Host ''
+
+# 判定結果サマリ
+$verdictCsvFinal = Join-Path $outputDir 'AuditVerdict.csv'
+$iocCsvFinal = Join-Path $outputDir 'IocFindings.csv'
+if (Test-Path $verdictCsvFinal) {
+    $vRowsFinal = Import-Csv $verdictCsvFinal
+    $cCompromised  = @($vRowsFinal | Where-Object { $_.Verdict -eq 'Compromised' }).Count
+    $cNeedsReview  = @($vRowsFinal | Where-Object { $_.Verdict -eq 'NeedsReview' }).Count
+    $cHardening    = @($vRowsFinal | Where-Object { $_.Verdict -eq 'Hardening' }).Count
+    $cClean        = @($vRowsFinal | Where-Object { $_.Verdict -eq 'Clean' }).Count
+    $cHighIoc = 0
+    if (Test-Path $iocCsvFinal) {
+        $cHighIoc = @(Import-Csv $iocCsvFinal | Where-Object { $_.Severity -eq 'High' }).Count
+    }
+
+    Write-Host '  --------------------------------------------------------' -ForegroundColor DarkGray
+    Write-Host '  判定結果:' -ForegroundColor Cyan
+    Write-Host ''
+    if ($cCompromised -eq 0 -and $cHighIoc -eq 0) {
+        Write-Host '    侵害は検出されませんでした' -ForegroundColor Green
+    } else {
+        Write-Host '    侵害が検出されました' -ForegroundColor Red
+    }
+    Write-Host ''
+    Write-Host "    侵害確定:   $cCompromised 件" -ForegroundColor $(if ($cCompromised -gt 0) { 'Red' } else { 'Green' })
+    Write-Host "    要確認:     $cNeedsReview 件" -ForegroundColor $(if ($cNeedsReview -gt 0) { 'Yellow' } else { 'Green' })
+    Write-Host "    要強化:     $cHardening 件" -ForegroundColor $(if ($cHardening -gt 0) { 'Yellow' } else { 'Green' })
+    Write-Host "    対策不要:   $cClean 件" -ForegroundColor Green
+    Write-Host "    システム IOC: $cHighIoc 件" -ForegroundColor $(if ($cHighIoc -gt 0) { 'Red' } else { 'Green' })
+    Write-Host ''
+    Write-Host '  --------------------------------------------------------' -ForegroundColor DarkGray
+}
+
 Write-Host ('  結果フォルダ: ' + $outputDir) -ForegroundColor White
 Write-Host ''
 
