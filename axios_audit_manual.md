@@ -574,7 +574,13 @@ npm install パッケージ名 --min-release-age=0
 npm --version
 ```
 
-でバージョンを確認し、古い場合は Node.js ごとアップグレードしてください：
+でバージョンを確認し、v11.10 未満の場合は npm だけをアップグレードしてください（Node.js はそのままで OK）：
+
+```
+npm install -g npm@latest
+```
+
+Node.js が古い場合（v18 未満など）は Node.js ごとアップグレードしてください：
 
 ```
 # Node.js 公式サイトから LTS 版をインストール（npm も同梱）
