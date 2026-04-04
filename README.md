@@ -54,6 +54,11 @@ powershell -ExecutionPolicy Bypass -File .\axios_audit_run_all.ps1 -StartFrom 7 
 powershell -ExecutionPolicy Bypass -File .\axios_audit_run_all.ps1 -StartFrom 7 -AutoRemediate
 ```
 
+## 注意事項
+
+- Stage 7/8（侵害検出時の修復・検証）は、実際の侵害環境での動作検証を行っていません。修復を実行する前に、必ず `-DryRunOnly` で内容を確認してください。
+- 本ツールは侵害の有無を判定する補助ツールであり、検出結果の最終判断はご自身で行ってください。
+
 ## 詳細マニュアル
 
 攻撃の背景、各 Stage の詳しい説明、判定結果の読み方、修復後の手動対応、今後の防御策については **[axios_audit_manual.md](axios_audit_manual.md)** を参照してください。

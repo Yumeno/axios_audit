@@ -183,7 +183,7 @@ if ($actions.Count -gt 0) {
 [void]$manualActions.Add('         postinstall が必要なパッケージは個別に: npm rebuild パッケージ名')
 [void]$manualActions.Add('')
 [void]$manualActions.Add('     [重要] 新しいバージョンの即時採用を避ける（クールダウン）:')
-[void]$manualActions.Add('       npm config set min-release-age 7')
+[void]$manualActions.Add('       npm config set min-release-age 7    ※ npm v11.10 以降で利用可能')
 [void]$manualActions.Add('')
 [void]$manualActions.Add('       → 公開から 7 日以内のバージョンのインストールを拒否します。')
 [void]$manualActions.Add('         今回の侵害版は約 3 時間で削除されたので、7 日待てば踏みません。')

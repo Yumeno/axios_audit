@@ -308,6 +308,15 @@ if ($systemCompromised -or $countCompromised -gt 0) {
 [void]$report.Add('  以下の設定はパッケージ名に関係なく、npm 全体に効きます。')
 [void]$report.Add('')
 
+# npm バージョンを取得して min-release-age の対応可否を判定
+$npmVersionStr = $null
+try { $npmVersionStr = (& npm --version 2>$null) } catch {}
+$npmSupportsAge = $false
+if ($npmVersionStr -match '^(\d+)\.(\d+)') {
+    $npmMajor = [int]$Matches[1]; $npmMinor = [int]$Matches[2]
+    $npmSupportsAge = ($npmMajor -gt 11 -or ($npmMajor -eq 11 -and $npmMinor -ge 10))
+}
+
 # npm の現在の設定を確認
 $currentIgnoreScripts = $null
 $currentMinReleaseAge = $null
@@ -315,7 +324,9 @@ try {
     $savedEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     $currentIgnoreScripts = (& npm config get ignore-scripts 2>$null)
-    $currentMinReleaseAge = (& npm config get min-release-age 2>$null)
+    if ($npmSupportsAge) {
+        $currentMinReleaseAge = (& npm config get min-release-age 2>$null)
+    }
     $ErrorActionPreference = $savedEAP
 } catch {
     $ErrorActionPreference = $savedEAP
@@ -345,16 +356,22 @@ if ($currentIgnoreScripts -eq 'true') {
 [void]$report.Add('    公開から一定日数が経過していないバージョンのインストールを拒否します。')
 [void]$report.Add('    今回の侵害版は約3時間で削除されたので、7日待てば絶対に踏みません。')
 [void]$report.Add('')
-if ($currentMinReleaseAge -and $currentMinReleaseAge -ne 'undefined' -and $currentMinReleaseAge -ne '0') {
-    [void]$report.Add('    現在の設定: min-release-age = ' + $currentMinReleaseAge + '  ✓ 設定済み')
+if ($npmSupportsAge) {
+    if ($currentMinReleaseAge -and $currentMinReleaseAge -ne 'undefined' -and $currentMinReleaseAge -ne '0') {
+        [void]$report.Add('    現在の設定: min-release-age = ' + $currentMinReleaseAge + '  ✓ 設定済み')
+    } else {
+        [void]$report.Add('    現在の設定: min-release-age = ' + $(if ($currentMinReleaseAge) { $currentMinReleaseAge } else { '(未設定)' }) + '  ✗ 未設定')
+        [void]$report.Add('')
+        [void]$report.Add('    設定コマンド:')
+        [void]$report.Add('      npm config set min-release-age 7')
+        [void]$report.Add('')
+        [void]$report.Add('    ※ 緊急パッチを即座に適用したい場合は都度:')
+        [void]$report.Add('      npm install パッケージ名 --min-release-age=0')
+    }
 } else {
-    [void]$report.Add('    現在の設定: min-release-age = ' + $(if ($currentMinReleaseAge) { $currentMinReleaseAge } else { '(未設定)' }) + '  ✗ 未設定')
-    [void]$report.Add('')
-    [void]$report.Add('    設定コマンド（npm v11.10 以降）:')
+    [void]$report.Add('    この機能は npm v11.10 以降で利用可能です（現在 v' + $npmVersionStr + '）。')
+    [void]$report.Add('    npm をアップグレード後に以下を実行してください:')
     [void]$report.Add('      npm config set min-release-age 7')
-    [void]$report.Add('')
-    [void]$report.Add('    ※ 緊急パッチを即座に適用したい場合は都度:')
-    [void]$report.Add('      npm install パッケージ名 --min-release-age=0')
 }
 [void]$report.Add('')
 
@@ -368,14 +385,27 @@ if ($currentMinReleaseAge -and $currentMinReleaseAge -ne 'undefined' -and $curre
 
 [void]$report.Add('  [まとめ] いますぐ実行すべきコマンド（この PC 全体に適用）:')
 [void]$report.Add('')
-$alreadyDone = ($currentIgnoreScripts -eq 'true') -and ($currentMinReleaseAge -and $currentMinReleaseAge -ne 'undefined' -and $currentMinReleaseAge -ne '0')
+$ignoreScriptsOk = ($currentIgnoreScripts -eq 'true')
+$minReleaseAgeOk = $npmSupportsAge -and ($currentMinReleaseAge -and $currentMinReleaseAge -ne 'undefined' -and $currentMinReleaseAge -ne '0')
+$alreadyDone = $ignoreScriptsOk -and ($minReleaseAgeOk -or -not $npmSupportsAge)
 if ($alreadyDone) {
-    [void]$report.Add('    ✓ この PC では防御策 A / B とも設定済みです。追加操作は不要です。')
+    [void]$report.Add('    ✓ この PC では防御設定が適用済みです。')
+    if (-not $npmSupportsAge) {
+        [void]$report.Add('    ※ min-release-age は npm v11.10 以降で利用可能です。npm のアップグレードを推奨します。')
+    }
 } else {
-    [void]$report.Add('    npm config set ignore-scripts true')
-    [void]$report.Add('    npm config set min-release-age 7')
+    if (-not $ignoreScriptsOk) {
+        [void]$report.Add('    npm config set ignore-scripts true')
+    }
+    if ($npmSupportsAge) {
+        if (-not $minReleaseAgeOk) {
+            [void]$report.Add('    npm config set min-release-age 7')
+        }
+    } else {
+        [void]$report.Add('    npm のアップグレード後: npm config set min-release-age 7  (v11.10 以降)')
+    }
     [void]$report.Add('')
-    [void]$report.Add('    この 2 行だけで、今回の axios 攻撃を含むほとんどの')
+    [void]$report.Add('    これにより、今回の axios 攻撃を含むほとんどの')
     [void]$report.Add('    npm サプライチェーン攻撃を防げます。')
 }
 [void]$report.Add('')
@@ -423,12 +453,22 @@ Write-Host ''
 if (-not $alreadyDone) {
     Write-Host '  [推奨] この PC の npm を今後の攻撃に備えて強化してください:' -ForegroundColor Yellow
     Write-Host ''
-    Write-Host '    npm config set ignore-scripts true' -ForegroundColor White
-    Write-Host '    npm config set min-release-age 7' -ForegroundColor White
+    if (-not $ignoreScriptsOk) {
+        Write-Host '    npm config set ignore-scripts true' -ForegroundColor White
+    }
+    if ($npmSupportsAge -and -not $minReleaseAgeOk) {
+        Write-Host '    npm config set min-release-age 7' -ForegroundColor White
+    }
+    if (-not $npmSupportsAge) {
+        Write-Host '    npm のアップグレード後: npm config set min-release-age 7  (v11.10 以降)' -ForegroundColor DarkGray
+    }
     Write-Host ''
     Write-Host '    詳細は AuditVerdict.txt の「今後の防御策」セクションを参照。' -ForegroundColor DarkGray
 } else {
-    Write-Host '  [OK] npm の防御設定（ignore-scripts / min-release-age）は設定済みです。' -ForegroundColor Green
+    Write-Host '  [OK] npm の防御設定は適用済みです。' -ForegroundColor Green
+    if (-not $npmSupportsAge) {
+        Write-Host '  ※ min-release-age は npm v11.10 以降で利用可能です。npm のアップグレードを推奨します。' -ForegroundColor DarkGray
+    }
 }
 Write-Host ''
 Write-Host ('  詳細: ' + $verdictTxt)

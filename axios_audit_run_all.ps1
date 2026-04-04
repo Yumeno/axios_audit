@@ -456,23 +456,42 @@ if ($ignoreOk) {
 } else {
     Write-Host ('    ignore-scripts  = ' + $(if ($cfgIgnore) { $cfgIgnore } else { '(未設定)' }) + '  ✗ 未設定') -ForegroundColor Yellow
 }
-if ($ageOk) {
-    Write-Host ('    min-release-age = ' + $cfgAge + '      ✓') -ForegroundColor Green
+# npm バージョンを取得して min-release-age の対応可否を判定
+$npmVersionStr = $null
+try { $npmVersionStr = (& npm --version 2>$null) } catch {}
+$npmSupportsAge = $false
+if ($npmVersionStr -match '^(\d+)\.(\d+)') {
+    $npmMajor = [int]$Matches[1]; $npmMinor = [int]$Matches[2]
+    $npmSupportsAge = ($npmMajor -gt 11 -or ($npmMajor -eq 11 -and $npmMinor -ge 10))
+}
+
+if ($npmSupportsAge) {
+    if ($ageOk) {
+        Write-Host ('    min-release-age = ' + $cfgAge + '      ✓') -ForegroundColor Green
+    } else {
+        Write-Host ('    min-release-age = ' + $(if ($cfgAge) { $cfgAge } else { '(未設定)' }) + '  ✗ 未設定') -ForegroundColor Yellow
+    }
 } else {
-    Write-Host ('    min-release-age = ' + $(if ($cfgAge) { $cfgAge } else { '(未設定)' }) + '  ✗ 未設定') -ForegroundColor Yellow
+    Write-Host ('    min-release-age = (npm v11.10 以降で利用可能。現在 v' + $npmVersionStr + ')') -ForegroundColor DarkGray
 }
 
 Write-Host ''
-if ($ignoreOk -and $ageOk) {
+if ($ignoreOk -and ($ageOk -or -not $npmSupportsAge)) {
     Write-Host '    この PC の npm 防御設定は適用済みです。' -ForegroundColor Green
+    if (-not $npmSupportsAge) {
+        Write-Host '    ※ min-release-age は npm v11.10 以降で利用可能です。npm のアップグレードを推奨します。' -ForegroundColor DarkGray
+    }
 } else {
     Write-Host '    以下のコマンドで、今後の攻撃に備えてください:' -ForegroundColor Yellow
     Write-Host ''
     if (-not $ignoreOk) {
         Write-Host '      npm config set ignore-scripts true' -ForegroundColor White
     }
-    if (-not $ageOk) {
+    if (-not $ageOk -and $npmSupportsAge) {
         Write-Host '      npm config set min-release-age 7' -ForegroundColor White
+    }
+    if (-not $npmSupportsAge) {
+        Write-Host '      npm のアップグレード後: npm config set min-release-age 7  (v11.10 以降)' -ForegroundColor DarkGray
     }
     Write-Host ''
     Write-Host '    詳細は AuditVerdict.txt の「今後の防御策」セクションを参照。' -ForegroundColor DarkGray
