@@ -83,7 +83,9 @@ $candidateCaches = New-Object System.Collections.ArrayList
 try {
     $savedEnc = [Console]::OutputEncoding
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    Set-StrictMode -Off
     $npmCache = (& npm config get cache 2>$null)
+    Set-StrictMode -Version Latest
     [Console]::OutputEncoding = $savedEnc
     if ($LASTEXITCODE -eq 0 -and $npmCache) {
         $trimmed = $npmCache.ToString().Trim()
@@ -152,7 +154,9 @@ try {
     $savedEnc = [Console]::OutputEncoding
     $ErrorActionPreference = 'Continue'
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    Set-StrictMode -Off
     (& npm ls -g --depth=8 2>&1 | Out-String) | Out-File -FilePath $globalTxt -Encoding UTF8
+    Set-StrictMode -Version Latest
     [Console]::OutputEncoding = $savedEnc
     $ErrorActionPreference = $savedEAP
 } catch {

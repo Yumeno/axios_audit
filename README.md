@@ -8,6 +8,10 @@
 - **シェル:** Windows PowerShell 5.1 以降（Windows 標準搭載）
 - **ファイルシステム:** システムロケールが Shift_JIS（cp932）の標準的な日本語 Windows 環境で動作します。スクリプト自体は UTF-8 BOM + CRLF で保存されています。
 - **npm:** Node.js / npm がインストール済みであること（バージョン確認・修復に使用）。npm がなくてもプロジェクト棚卸しと IOC 確認は実行できます。
+- **nvm-windows 利用時の注意:** nvm-windows 経由で Node.js を管理している場合、PowerShell 5.1 のスクリプト実行コンテキストでは npm に PATH が通らないことがあります。スクリプトは環境変数 `NVM_SYMLINK` / `NVM_HOME` を参照して自動的に PATH を補完しますが、それでも npm が見つからない場合は、スクリプト実行前に手動で PATH を追加してください：
+  ```powershell
+  $env:PATH = "$env:NVM_SYMLINK;$env:PATH"
+  ```
 
 ## インストール
 

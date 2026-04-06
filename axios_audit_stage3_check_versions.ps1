@@ -53,11 +53,29 @@ function Add-Result {
     $stats.Findings++
 }
 
+# nvm for Windows が管理する Node.js パスを PATH に追加
+# PowerShell 5.1 から直接実行すると nvm-windows の PATH 注入が効かないため
+$nvmSymlink = if ($env:NVM_SYMLINK) { $env:NVM_SYMLINK } else { '' }
+$nvmHome    = if ($env:NVM_HOME)    { $env:NVM_HOME }    else { '' }
+if ($nvmSymlink -and (Test-Path $nvmSymlink)) {
+    $env:PATH = "$nvmSymlink;$env:PATH"
+} elseif ($nvmHome) {
+    $currentLink = Join-Path $nvmHome 'nodejs'
+    if (Test-Path $currentLink) {
+        $env:PATH = "$currentLink;$env:PATH"
+    }
+}
+
+# nvm-windows の npm.ps1 ラッパーが $MyInvocation.Statement を参照するため
+# StrictMode Latest だとエラーになる。npm 呼び出し時のみ緩和する。
 $npmAvailable = $true
 try {
+    Set-StrictMode -Off
     & npm --version *> $null
 } catch {
     $npmAvailable = $false
+} finally {
+    Set-StrictMode -Version Latest
 }
 
 $index = 0
@@ -95,7 +113,9 @@ foreach ($root in $roots) {
         $savedEnc = [Console]::OutputEncoding
         $ErrorActionPreference = 'Continue'
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        Set-StrictMode -Off          # nvm-windows npm.ps1 ラッパー対策
         $raw = (& npm list axios --all 2>&1 | Out-String)
+        Set-StrictMode -Version Latest
         [Console]::OutputEncoding = $savedEnc
         $ErrorActionPreference = $savedEAP
 

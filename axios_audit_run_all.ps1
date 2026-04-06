@@ -441,8 +441,10 @@ $cfgAge = $null
 try {
     $savedEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
+    Set-StrictMode -Off
     $cfgIgnore = (& npm config get ignore-scripts 2>$null)
     $cfgAge = (& npm config get min-release-age 2>$null)
+    Set-StrictMode -Version Latest
     $ErrorActionPreference = $savedEAP
 } catch {
     $ErrorActionPreference = $savedEAP
@@ -458,7 +460,7 @@ if ($ignoreOk) {
 }
 # npm バージョンを取得して min-release-age の対応可否を判定
 $npmVersionStr = $null
-try { $npmVersionStr = (& npm --version 2>$null) } catch {}
+try { Set-StrictMode -Off; $npmVersionStr = (& npm --version 2>$null) } catch {} finally { Set-StrictMode -Version Latest }
 $npmSupportsAge = $false
 if ($npmVersionStr -match '^(\d+)\.(\d+)') {
     $npmMajor = [int]$Matches[1]; $npmMinor = [int]$Matches[2]
