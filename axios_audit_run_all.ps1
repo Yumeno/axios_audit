@@ -16,6 +16,8 @@ param(
     [switch]$SkipWSL,
     [switch]$AutoRemediate,
     [switch]$DryRunOnly,
+    [switch]$AllowThirdPartyRepoMutation,
+    [switch]$AllowUnknownRepoMutation,
     [int]$StartFrom = 1,
     [string]$OutputDir
 )
@@ -296,12 +298,17 @@ if ($needsFix -or $explicitStage7 -or $explicitStage8) {
         Write-Host ''
     }
 
+    # Stage 7 共通パラメータ
+    $stage7Params = @{
+        OutputDir = $outputDir
+        AllowThirdPartyRepoMutation = $AllowThirdPartyRepoMutation
+        AllowUnknownRepoMutation    = $AllowUnknownRepoMutation
+    }
+
     if ($DryRunOnly) {
         # ドライランのみ
-        Run-Stage -Num 7 -Label '修復（ドライラン）' -FileName 'axios_audit_stage7_remediate.ps1' -Params @{
-            OutputDir = $outputDir
-            DryRun = $true
-        } | Out-Null
+        $stage7Params['DryRun'] = $true
+        Run-Stage -Num 7 -Label '修復（ドライラン）' -FileName 'axios_audit_stage7_remediate.ps1' -Params $stage7Params | Out-Null
 
         Write-Host '  ドライランのみ実行しました。実際の修復は以下で実行してください。' -ForegroundColor Yellow
         Write-Host ('    powershell -ExecutionPolicy Bypass -File .\axios_audit_run_all.ps1 -StartFrom 7 -AutoRemediate') -ForegroundColor White
@@ -309,10 +316,8 @@ if ($needsFix -or $explicitStage7 -or $explicitStage8) {
 
     } elseif ($AutoRemediate -or $explicitStage7) {
         # -AutoRemediate または -StartFrom 7 の場合は実行
-        $ok7 = Run-Stage -Num 7 -Label '修復実行' -FileName 'axios_audit_stage7_remediate.ps1' -Params @{
-            OutputDir = $outputDir
-            Force = $true
-        }
+        $stage7Params['Force'] = $true
+        $ok7 = Run-Stage -Num 7 -Label '修復実行' -FileName 'axios_audit_stage7_remediate.ps1' -Params $stage7Params
         if ($ok7 -or $explicitStage8) {
             Run-Stage -Num 8 -Label '修復後検証' -FileName 'axios_audit_stage8_verify.ps1' -Params @{
                 OutputDir = $outputDir

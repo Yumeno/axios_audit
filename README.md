@@ -58,6 +58,19 @@ powershell -ExecutionPolicy Bypass -File .\axios_audit_run_all.ps1 -StartFrom 7 
 powershell -ExecutionPolicy Bypass -File .\axios_audit_run_all.ps1 -StartFrom 7 -AutoRemediate
 ```
 
+**修復ポリシー:**
+
+- **1.x 系:** 自動 remediation で `1.15.0` に exact pin（`--save-exact --package-lock-only` → `npm ci`）
+- **0.x 系:** backport 未確定のため自動 remediation なし（手順案内のみ）
+- **自作リポジトリ (`Mine`):** lockfile 更新 → クリーン再構築 → 署名検証の 3 段階
+- **他作/不明リポジトリ:** デフォルトで report-only（repo tree を変更しない）
+
+他作/不明リポジトリのローカル cleanup を許可する場合:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\axios_audit_run_all.ps1 -StartFrom 7 -AutoRemediate -AllowThirdPartyRepoMutation
+```
+
 ## 注意事項
 
 - Stage 7/8（侵害検出時の修復・検証）は、実際の侵害環境での動作検証を行っていません。修復を実行する前に、必ず `-DryRunOnly` で内容を確認してください。
