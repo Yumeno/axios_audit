@@ -62,6 +62,7 @@ foreach ($logEntry in $npmLogs) {
 # ============================================================
 $verdictResults = New-Object System.Collections.ArrayList
 $countCompromised = 0
+$countVulnerable = 0
 $countNeedsReview = 0
 $countHardening = 0
 $countClean = 0
@@ -131,7 +132,19 @@ foreach ($path in ($allPaths.Keys | Sort-Object)) {
         if ($vf.Status -eq 'HighRiskVersionFound') {
             $verdict = 'Compromised'
             [void]$reasons.Add("npm list で侵害版 axios@$($vf.AxiosVersion) を確認")
-            [void]$actions.Add("[自動修復] axios を安全なバージョンにダウングレード")
+            [void]$actions.Add("[自動修復] axios を安全なバージョンにアップグレード")
+        }
+        if ($vf.Status -eq 'VulnerableVersionFound') {
+            $hasAxios = $true
+            if ($verdict -ne 'Compromised') { $verdict = 'Vulnerable' }
+            $cveList = if ($vf.PSObject.Properties['DetectedCves']) { $vf.DetectedCves } else { 'CVE-2025-62718' }
+            $recTarget = if ($vf.PSObject.Properties['RecommendedTargetVersion'] -and $vf.RecommendedTargetVersion) { $vf.RecommendedTargetVersion } else { '' }
+            [void]$reasons.Add("axios@$($vf.AxiosVersion) は既知の脆弱性 ($cveList) の影響を受けます")
+            if ($recTarget) {
+                [void]$actions.Add("[自動修復] axios を $recTarget にアップグレード（exact pin）")
+            } else {
+                [void]$actions.Add("[手動] 0.x 系は backport 未確定。1.x への移行または maintainer への確認が必要です")
+            }
         }
         if ($vf.Status -eq 'ObservedVersion') {
             $hasAxios = $true
@@ -168,24 +181,68 @@ foreach ($path in ($allPaths.Keys | Sort-Object)) {
             [void]$actions.Add("[注意] 他者のリポジトリです。IOC 除去とキャッシュクリアは必要ですが、lockfile やバージョン変更を upstream に push しないでください")
         }
     }
+    if ($verdict -eq 'Vulnerable') {
+        if ($ownership -ne 'Mine') {
+            [void]$actions.Add("[注意] 外部リポジトリのため自動アップグレードは行いません。所有者に 1.15.0 以上への更新を報告してください")
+        }
+    }
     if ($verdict -eq 'NeedsReview' -and $reasons.Count -eq 0) {
         [void]$reasons.Add("追加確認が必要です")
+    }
+
+    # --- remediation disposition 決定 ---
+    $remediationDisposition = 'None'
+    $remediationReason = ''
+    $recommendedTarget = ''
+    $packageFamily = ''
+
+    # プロジェクトの axios バージョンファミリーを判定
+    foreach ($vf in $projVersions) {
+        if ($vf.AxiosVersion -match '^0\.') { $packageFamily = '0.x' }
+        elseif ($vf.AxiosVersion -match '^[1-9]') { $packageFamily = '1.x' }
+    }
+
+    if ($verdict -eq 'Compromised') {
+        $remediationReason = 'CompromisedSupplyChain'
+        if ($ownership -eq 'Mine' -and $packageFamily -eq '1.x') {
+            $remediationDisposition = 'AutoUpgrade'
+            $recommendedTarget = '1.15.0'
+        } elseif ($ownership -eq 'Mine' -and $packageFamily -eq '0.x') {
+            $remediationDisposition = 'ManualReview'
+        } else {
+            $remediationDisposition = 'ReportOnly'
+        }
+    } elseif ($verdict -eq 'Vulnerable') {
+        $remediationReason = 'KnownCve'
+        if ($ownership -eq 'Mine' -and $packageFamily -eq '1.x') {
+            $remediationDisposition = 'AutoUpgrade'
+            $recommendedTarget = '1.15.0'
+        } elseif ($ownership -eq 'Mine' -and $packageFamily -eq '0.x') {
+            $remediationDisposition = 'ManualReview'
+        } else {
+            $remediationDisposition = 'ReportOnly'
+        }
     }
 
     # 集計
     switch ($verdict) {
         'Compromised'  { $countCompromised++ }
+        'Vulnerable'   { $countVulnerable++ }
         'NeedsReview'  { $countNeedsReview++ }
         'Hardening'    { $countHardening++ }
         'Clean'        { $countClean++ }
     }
 
     [void]$verdictResults.Add([pscustomobject]@{
-        Path      = $path
-        Verdict   = $verdict
-        Ownership = $ownership
-        Reasons   = ($reasons | Select-Object -Unique) -join '; '
-        Actions   = ($actions | Select-Object -Unique) -join '; '
+        Path                     = $path
+        Verdict                  = $verdict
+        Ownership                = $ownership
+        Reasons                  = ($reasons | Select-Object -Unique) -join '; '
+        Actions                  = ($actions | Select-Object -Unique) -join '; '
+        RemediationDisposition   = $remediationDisposition
+        RemediationReason        = $remediationReason
+        RecommendedTargetVersion = $recommendedTarget
+        PackageFamily            = $packageFamily
     })
 }
 
@@ -218,6 +275,7 @@ if ($systemCompromised) {
 [void]$report.Add('■ 全体サマリ')
 [void]$report.Add("  - 監査対象プロジェクト: $($allPaths.Count) 件")
 [void]$report.Add("  - 侵害確定:   $countCompromised 件")
+[void]$report.Add("  - 脆弱性あり: $countVulnerable 件")
 [void]$report.Add("  - 要確認:     $countNeedsReview 件")
 [void]$report.Add("  - 要強化:     $countHardening 件")
 [void]$report.Add("  - 対策不要:   $countClean 件")
@@ -254,6 +312,7 @@ if ($suspiciousLogCount -gt 0) {
 foreach ($v in ($verdictResults | Sort-Object Verdict, Path)) {
     $icon = switch ($v.Verdict) {
         'Compromised' { '[侵害確定]' }
+        'Vulnerable'  { '[脆弱性]  ' }
         'NeedsReview' { '[要確認]  ' }
         'Hardening'   { '[要強化]  ' }
         'Clean'       { '[対策不要]' }
@@ -282,6 +341,11 @@ foreach ($v in ($verdictResults | Sort-Object Verdict, Path)) {
 [void]$report.Add('')
 if ($systemCompromised -or $countCompromised -gt 0) {
     [void]$report.Add('  → 侵害が確認されました。Stage 7（修復スクリプト）を実行してください:')
+    [void]$report.Add("     powershell -ExecutionPolicy Bypass -File .\axios_audit_stage7_remediate.ps1 -OutputDir `"$OutputDir`"")
+    [void]$report.Add('')
+} elseif ($countVulnerable -gt 0) {
+    [void]$report.Add('  → 既知の脆弱性 (CVE) を持つ axios バージョンが検出されました。')
+    [void]$report.Add('    Stage 7 を実行して安全なバージョンにアップグレードしてください:')
     [void]$report.Add("     powershell -ExecutionPolicy Bypass -File .\axios_audit_stage7_remediate.ps1 -OutputDir `"$OutputDir`"")
     [void]$report.Add('')
 } elseif ($countNeedsReview -gt 0) {
@@ -425,6 +489,7 @@ $verdictResults | Export-Csv -Path $verdictCsv -NoTypeInformation -Encoding UTF8
     "AuditVerdict.csv   : $verdictCsv",
     "TotalProjects      : $($allPaths.Count)",
     "Compromised        : $countCompromised",
+    "Vulnerable         : $countVulnerable",
     "NeedsReview        : $countNeedsReview",
     "Hardening          : $countHardening",
     "Clean              : $countClean",
@@ -438,6 +503,7 @@ Write-Host '  監査判定レポート' -ForegroundColor Cyan
 Write-Host '========================================' -ForegroundColor Cyan
 Write-Host ''
 Write-Host "  侵害確定: $countCompromised 件" -ForegroundColor $(if ($countCompromised -gt 0) { 'Red' } else { 'Green' })
+Write-Host "  脆弱性:   $countVulnerable 件" -ForegroundColor $(if ($countVulnerable -gt 0) { 'Yellow' } else { 'Green' })
 Write-Host "  要確認:   $countNeedsReview 件" -ForegroundColor $(if ($countNeedsReview -gt 0) { 'Yellow' } else { 'Green' })
 Write-Host "  要強化:   $countHardening 件" -ForegroundColor $(if ($countHardening -gt 0) { 'Yellow' } else { 'Green' })
 Write-Host "  対策不要: $countClean 件" -ForegroundColor Green
@@ -445,6 +511,8 @@ Write-Host "  IOC:      $($highIocs.Count) 件" -ForegroundColor $(if ($highIocs
 Write-Host ''
 if ($systemCompromised -or $countCompromised -gt 0) {
     Write-Host '  [!] 侵害が検出されました。Stage 7 を実行してください。' -ForegroundColor Red
+} elseif ($countVulnerable -gt 0) {
+    Write-Host '  [!] 既知の脆弱性を持つ axios バージョンが検出されました。Stage 7 を実行してください。' -ForegroundColor Yellow
 } elseif ($countNeedsReview -gt 0) {
     Write-Host '  [?] 要確認プロジェクトがあります。AuditVerdict.txt を確認してください。' -ForegroundColor Yellow
 } else {

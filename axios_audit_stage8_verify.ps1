@@ -28,6 +28,7 @@ $beforeVerdicts = Import-Csv $beforeVerdictCsv
 $beforeIocs     = if (Test-Path $beforeIocCsv) { Import-Csv $beforeIocCsv } else { @() }
 
 $beforeCompromised = @($beforeVerdicts | Where-Object { $_.Verdict -eq 'Compromised' }).Count
+$beforeVulnerable  = @($beforeVerdicts | Where-Object { $_.Verdict -eq 'Vulnerable' }).Count
 $beforeNeedsReview = @($beforeVerdicts | Where-Object { $_.Verdict -eq 'NeedsReview' }).Count
 $beforeClean       = @($beforeVerdicts | Where-Object { $_.Verdict -eq 'Clean' }).Count
 $beforeHighIocs    = @($beforeIocs | Where-Object { $_.Severity -eq 'High' }).Count
@@ -38,7 +39,7 @@ Write-Host '  修復後の検証を開始します' -ForegroundColor Cyan
 Write-Host '========================================' -ForegroundColor Cyan
 Write-Host ''
 Write-Host '  修復前の状態:' -ForegroundColor Yellow
-Write-Host "    侵害確定: $beforeCompromised / 要確認: $beforeNeedsReview / 白: $beforeClean / IOC: $beforeHighIocs"
+Write-Host "    侵害確定: $beforeCompromised / 脆弱性: $beforeVulnerable / 要確認: $beforeNeedsReview / 白: $beforeClean / IOC: $beforeHighIocs"
 Write-Host ''
 
 # ============================================================
@@ -136,6 +137,7 @@ $afterVerdicts = if (Test-Path $afterVerdictCsv) { Import-Csv $afterVerdictCsv }
 $afterIocs     = if (Test-Path $afterIocCsv)     { Import-Csv $afterIocCsv }     else { @() }
 
 $afterCompromised = @($afterVerdicts | Where-Object { $_.Verdict -eq 'Compromised' }).Count
+$afterVulnerable  = @($afterVerdicts | Where-Object { $_.Verdict -eq 'Vulnerable' }).Count
 $afterNeedsReview = @($afterVerdicts | Where-Object { $_.Verdict -eq 'NeedsReview' }).Count
 $afterClean       = @($afterVerdicts | Where-Object { $_.Verdict -eq 'Clean' }).Count
 $afterHighIocs    = @($afterIocs | Where-Object { $_.Severity -eq 'High' }).Count
@@ -179,6 +181,7 @@ $report = New-Object System.Collections.ArrayList
 
 [void]$report.Add('■ 修復前 → 修復後')
 [void]$report.Add("  - 侵害確定: $beforeCompromised 件 → $afterCompromised 件  $(if ($afterCompromised -eq 0 -and $beforeCompromised -gt 0) { '✓ 解消' } elseif ($afterCompromised -gt 0) { '✗ 残存' } else { '-' })")
+[void]$report.Add("  - 脆弱性:   $beforeVulnerable 件 → $afterVulnerable 件  $(if ($afterVulnerable -eq 0 -and $beforeVulnerable -gt 0) { '✓ 解消' } elseif ($afterVulnerable -gt 0) { '✗ 残存' } else { '-' })")
 [void]$report.Add("  - 要確認:   $beforeNeedsReview 件 → $afterNeedsReview 件  $(if ($afterNeedsReview -le $beforeNeedsReview) { '✓' } else { '✗ 増加' })")
 [void]$report.Add("  - 白寄り:   $beforeClean 件 → $afterClean 件")
 [void]$report.Add("  - IOC:      $beforeHighIocs 件 → $afterHighIocs 件  $(if ($afterHighIocs -eq 0 -and $beforeHighIocs -gt 0) { '✓ 解消' } elseif ($afterHighIocs -gt 0) { '✗ 残存' } else { '-' })")
@@ -207,8 +210,8 @@ if (Test-Path $manualTxt) {
 # 結論
 [void]$report.Add('■ 結論')
 [void]$report.Add('')
-if ($afterCompromised -eq 0 -and $afterHighIocs -eq 0) {
-    [void]$report.Add('  → 自動修復は完了しました。侵害確定・高リスク IOC はゼロです。')
+if ($afterCompromised -eq 0 -and $afterVulnerable -eq 0 -and $afterHighIocs -eq 0) {
+    [void]$report.Add('  → 自動修復は完了しました。侵害確定・脆弱性・高リスク IOC はゼロです。')
     if (Test-Path $manualTxt) {
         [void]$report.Add('  → 手動対応チェックリストが残っています。')
         [void]$report.Add('    すべてのチェック項目を完了すれば監査終了です。')
@@ -230,6 +233,8 @@ $report | Out-File -FilePath $postVerdictTxt -Encoding UTF8
     "BeforeAfterDiff.csv       : $diffCsv",
     "Before_Compromised        : $beforeCompromised",
     "After_Compromised         : $afterCompromised",
+    "Before_Vulnerable         : $beforeVulnerable",
+    "After_Vulnerable          : $afterVulnerable",
     "Before_HighIOC            : $beforeHighIocs",
     "After_HighIOC             : $afterHighIocs"
 ) | Out-File -FilePath $summaryTxt -Encoding UTF8
@@ -241,10 +246,11 @@ Write-Host '  修復後の検証結果' -ForegroundColor Cyan
 Write-Host '========================================' -ForegroundColor Cyan
 Write-Host ''
 Write-Host "  侵害確定: $beforeCompromised → $afterCompromised" -ForegroundColor $(if ($afterCompromised -eq 0) { 'Green' } else { 'Red' })
+Write-Host "  脆弱性:   $beforeVulnerable → $afterVulnerable" -ForegroundColor $(if ($afterVulnerable -eq 0) { 'Green' } else { 'Yellow' })
 Write-Host "  IOC:      $beforeHighIocs → $afterHighIocs" -ForegroundColor $(if ($afterHighIocs -eq 0) { 'Green' } else { 'Red' })
 Write-Host "  要確認:   $beforeNeedsReview → $afterNeedsReview" -ForegroundColor $(if ($afterNeedsReview -eq 0) { 'Green' } else { 'Yellow' })
 Write-Host ''
-if ($afterCompromised -eq 0 -and $afterHighIocs -eq 0) {
+if ($afterCompromised -eq 0 -and $afterVulnerable -eq 0 -and $afterHighIocs -eq 0) {
     Write-Host '  [OK] 自動修復は完了しました。' -ForegroundColor Green
     Write-Host '       手動対応チェックリストを確認して監査を完了してください。' -ForegroundColor Yellow
 } else {

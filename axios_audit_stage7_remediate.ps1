@@ -2,7 +2,9 @@
 param(
     [Parameter(Mandatory)][string]$OutputDir,
     [switch]$DryRun,
-    [switch]$Force
+    [switch]$Force,
+    [switch]$AllowThirdPartyRepoMutation,
+    [switch]$AllowUnknownRepoMutation
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,6 +16,36 @@ $manualTxt      = Join-Path $OutputDir 'ManualActions.txt'
 $summaryTxt     = Join-Path $OutputDir 'Stage7_Summary.txt'
 $transcript     = Join-Path $OutputDir 'Stage7_Transcript.txt'
 Start-Transcript -Path $transcript -Force | Out-Null
+
+# ============================================================
+# ヘルパー関数
+# ============================================================
+
+function Get-RecommendedAxiosVersion {
+    param([string]$ResolvedAxiosVersion)
+
+    if ($ResolvedAxiosVersion -match '^1\.') {
+        return '1.15.0'
+    }
+
+    # 0.x は backport 未確定のため自動 remediation しない
+    return $null
+}
+
+function Get-RepoRemediationMode {
+    param(
+        [string]$Ownership,
+        [switch]$AllowThirdPartyRepoMutation,
+        [switch]$AllowUnknownRepoMutation
+    )
+
+    switch ($Ownership) {
+        'Mine'       { return 'OwnedFull' }
+        'ThirdParty' { return $(if ($AllowThirdPartyRepoMutation) { 'ExternalLocalCleanup' } else { 'ReportOnly' }) }
+        'Unknown'    { return $(if ($AllowUnknownRepoMutation) { 'ExternalLocalCleanup' } else { 'ReportOnly' }) }
+        default      { return 'ReportOnly' }
+    }
+}
 
 # ============================================================
 # 判定結果読み込み
@@ -31,11 +63,23 @@ $verdicts = Import-Csv $verdictCsv
 $iocs     = if (Test-Path $iocCsv) { Import-Csv $iocCsv } else { @() }
 $versionCsv = Join-Path $OutputDir 'AxiosVersionFindings.csv'
 $versions = if (Test-Path $versionCsv) { Import-Csv $versionCsv } else { @() }
-$compromisedProjects = @($verdicts | Where-Object { $_.Verdict -eq 'Compromised' })
+# RemediationDisposition が存在する場合はそちらを使用、なければ従来の Verdict ベース
+$hasDisposition = $verdicts.Count -gt 0 -and $verdicts[0].PSObject.Properties['RemediationDisposition']
+
+if ($hasDisposition) {
+    $remediationTargets = @($verdicts | Where-Object {
+        $_.RemediationDisposition -eq 'AutoUpgrade' -or
+        $_.RemediationDisposition -eq 'ManualReview' -or
+        $_.RemediationDisposition -eq 'ReportOnly' -and ($_.Verdict -eq 'Compromised' -or $_.Verdict -eq 'Vulnerable')
+    })
+} else {
+    $remediationTargets = @($verdicts | Where-Object { $_.Verdict -eq 'Compromised' })
+}
+
 $highIocs = @($iocs | Where-Object { $_.Severity -eq 'High' })
 
-if ($compromisedProjects.Count -eq 0 -and $highIocs.Count -eq 0) {
-    Write-Host '[INFO] 侵害確定のプロジェクトも高リスク IOC も検出されていません。修復は不要です。' -ForegroundColor Green
+if ($remediationTargets.Count -eq 0 -and $highIocs.Count -eq 0) {
+    Write-Host '[INFO] 修復が必要なプロジェクトも高リスク IOC も検出されていません。修復は不要です。' -ForegroundColor Green
     Stop-Transcript | Out-Null
     return
 }
@@ -52,13 +96,17 @@ function Plan-Action {
         [string]$Category,
         [string]$Target,
         [string]$Description,
-        [string]$Command
+        [string]$Command,
+        [string]$Phase = '',
+        [string]$Mode  = ''
     )
     [void]$actions.Add([pscustomobject]@{
         Category    = $Category
         Target      = $Target
         Description = $Description
         Command     = $Command
+        Phase       = $Phase
+        Mode        = $Mode
         Status      = 'Planned'
     })
 }
@@ -88,60 +136,116 @@ $regKeyPath     = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $regValueName   = 'MicrosoftUpdate'
 
 if (Test-Path $programDataWt) {
-    Plan-Action -Category 'IOC-File' -Target $programDataWt -Description 'RAT ペイロード wt.exe を削除' -Command "Remove-Item -LiteralPath '$programDataWt' -Force"
+    Plan-Action -Category 'IOC-File' -Target $programDataWt -Description 'RAT ペイロード wt.exe を削除' -Command "Remove-Item -LiteralPath '$programDataWt' -Force" -Phase 'SystemIOC'
 }
 if (Test-Path $programDataBat) {
-    Plan-Action -Category 'IOC-File' -Target $programDataBat -Description 'RAT 永続化バッチ system.bat を削除' -Command "Remove-Item -LiteralPath '$programDataBat' -Force"
+    Plan-Action -Category 'IOC-File' -Target $programDataBat -Description 'RAT 永続化バッチ system.bat を削除' -Command "Remove-Item -LiteralPath '$programDataBat' -Force" -Phase 'SystemIOC'
 }
 try {
     $regValue = Get-ItemProperty -Path $regKeyPath -Name $regValueName -ErrorAction Stop
     if ($regValue) {
-        Plan-Action -Category 'IOC-Registry' -Target "$regKeyPath\$regValueName" -Description 'RAT 永続化レジストリキーを削除' -Command "Remove-ItemProperty -Path '$regKeyPath' -Name '$regValueName' -Force"
+        Plan-Action -Category 'IOC-Registry' -Target "$regKeyPath\$regValueName" -Description 'RAT 永続化レジストリキーを削除' -Command "Remove-ItemProperty -Path '$regKeyPath' -Name '$regValueName' -Force" -Phase 'SystemIOC'
     }
 } catch {}
 
 # --- プロジェクトレベル修復 ---
-foreach ($proj in $compromisedProjects) {
+foreach ($proj in $remediationTargets) {
     $path = $proj.Path
     $projOwnership = if ($proj.PSObject.Properties['Ownership']) { $proj.Ownership } else { 'Unknown' }
+    $mode = Get-RepoRemediationMode `
+        -Ownership $projOwnership `
+        -AllowThirdPartyRepoMutation:$AllowThirdPartyRepoMutation `
+        -AllowUnknownRepoMutation:$AllowUnknownRepoMutation
 
-    # plain-crypto-js ディレクトリ削除（所有者を問わず実行 — IOC 除去）
-    $plainCryptoDir = Join-Path $path 'node_modules\plain-crypto-js'
-    if (Test-Path $plainCryptoDir) {
-        Plan-Action -Category 'Package' -Target $plainCryptoDir -Description "plain-crypto-js ディレクトリを削除" -Command "Remove-Item -LiteralPath '$plainCryptoDir' -Recurse -Force"
-    }
+    switch ($mode) {
+        'OwnedFull' {
+            # --- IOC パッケージ削除 ---
+            $plainCryptoDir = Join-Path $path 'node_modules\plain-crypto-js'
+            if (Test-Path $plainCryptoDir) {
+                Plan-Action -Category 'Package' -Target $plainCryptoDir -Description "plain-crypto-js ディレクトリを削除" -Command "Remove-Item -LiteralPath '$plainCryptoDir' -Recurse -Force" -Phase 'IOC-Cleanup' -Mode $mode
+            }
+            foreach ($relPkg in @('node_modules\@shadanai\openclaw', 'node_modules\@qqbrowser\openclaw-qbot')) {
+                $relDir = Join-Path $path $relPkg
+                if (Test-Path $relDir) {
+                    Plan-Action -Category 'Package' -Target $relDir -Description "関連侵害パッケージを削除" -Command "Remove-Item -LiteralPath '$relDir' -Recurse -Force" -Phase 'IOC-Cleanup' -Mode $mode
+                }
+            }
 
-    # 関連パッケージ削除（所有者を問わず実行 — IOC 除去）
-    foreach ($relPkg in @('node_modules\@shadanai\openclaw', 'node_modules\@qqbrowser\openclaw-qbot')) {
-        $relDir = Join-Path $path $relPkg
-        if (Test-Path $relDir) {
-            Plan-Action -Category 'Package' -Target $relDir -Description "関連侵害パッケージを削除" -Command "Remove-Item -LiteralPath '$relDir' -Recurse -Force"
-        }
-    }
+            # --- axios remediation (lockfile-first + exact pin) ---
+            $pkgJsonPath = Join-Path $path 'package.json'
+            if (Test-Path $pkgJsonPath) {
+                $projVer = @($versions | Where-Object { $_.RepoPath -eq $path })
+                foreach ($pv in $projVer) {
+                    $targetVersion = Get-RecommendedAxiosVersion -ResolvedAxiosVersion $pv.AxiosVersion
 
-    # axios ダウングレード — 自分のプロジェクトのみ実行
-    # 他者のリポジトリでは package.json / lockfile を書き換えない
-    # （npm install --save は package.json と lockfile を変更するため）
-    $pkgJsonPath = Join-Path $path 'package.json'
-    if ((Test-Path $pkgJsonPath) -and $projOwnership -eq 'Mine') {
-        $safeVersion = '1.14.0'
-        $projVer = @($versions | Where-Object { $_.RepoPath -eq $path })
-        foreach ($pv in $projVer) {
-            if ($pv.Status -eq 'HighRiskVersionFound' -and $pv.AxiosVersion -eq '0.30.4') {
-                $safeVersion = '0.30.3'
-                break
+                    if ($null -ne $targetVersion) {
+                        # Phase A: metadata-only (lockfile + package.json の exact pin)
+                        Plan-Action -Category 'LockfileUpdate' `
+                            -Target $path `
+                            -Description "axios を exact pin で安全版 ($targetVersion) に更新し、lockfile のみ更新" `
+                            -Command "Push-Location '$path'; npm install axios@$targetVersion --save-exact --package-lock-only --ignore-scripts 2>&1; Pop-Location" `
+                            -Phase 'MetadataOnly' -Mode $mode
+
+                        # Phase B: clean reinstall
+                        Plan-Action -Category 'Reinstall' `
+                            -Target $path `
+                            -Description "node_modules を削除して npm ci --ignore-scripts で再構築" `
+                            -Command "Push-Location '$path'; if (Test-Path '.\node_modules') { Remove-Item -LiteralPath '.\node_modules' -Recurse -Force }; npm ci --ignore-scripts 2>&1; Pop-Location" `
+                            -Phase 'Reinstall' -Mode $mode
+
+                        # Phase C: verify
+                        Plan-Action -Category 'Verify' `
+                            -Target $path `
+                            -Description "npm registry signatures を検証" `
+                            -Command "Push-Location '$path'; npm audit signatures 2>&1; Pop-Location" `
+                            -Phase 'Verify' -Mode $mode
+                    } else {
+                        # 0.x: 自動 remediation しない — manual-only
+                        Plan-Action -Category 'Info' `
+                            -Target $path `
+                            -Description ('[0.x] backport 未確定のため自動 remediation を行いません。maintainer への確認または 1.x への移行を検討してください (検出バージョン: ' + $pv.AxiosVersion + ')') `
+                            -Command "Write-Host '[INFO] 0.x requires manual decision: $path'" `
+                            -Phase 'ReportOnly' -Mode $mode
+                    }
+                }
             }
         }
-        Plan-Action -Category 'Downgrade' -Target $path -Description "axios を安全なバージョン ($safeVersion) にダウングレード" -Command "Push-Location '$path'; npm install axios@$safeVersion --save --ignore-scripts 2>&1; Pop-Location"
-    } elseif ((Test-Path $pkgJsonPath) -and $projOwnership -ne 'Mine') {
-        # 他者 / 不明のリポジトリ: ダウングレードはせず手順案内のみ
-        Plan-Action -Category 'Info' -Target $path -Description "[手順案内] 他者のリポジトリのため自動ダウングレードはスキップ。node_modules を削除して npm ci --ignore-scripts で再インストールしてください" -Command "Write-Host '[INFO] $path は他者のリポジトリです。手動で対応してください。'"
+
+        'ExternalLocalCleanup' {
+            # opt-in された外部リポジトリ: node_modules 配下の IOC 除去のみ
+            $plainCryptoDir = Join-Path $path 'node_modules\plain-crypto-js'
+            if (Test-Path $plainCryptoDir) {
+                Plan-Action -Category 'Package' -Target $plainCryptoDir -Description '[外部 repo / opt-in] plain-crypto-js ディレクトリを削除' -Command "Remove-Item -LiteralPath '$plainCryptoDir' -Recurse -Force" -Phase 'IOC-Cleanup' -Mode $mode
+            }
+            foreach ($relPkg in @('node_modules\@shadanai\openclaw', 'node_modules\@qqbrowser\openclaw-qbot')) {
+                $relDir = Join-Path $path $relPkg
+                if (Test-Path $relDir) {
+                    Plan-Action -Category 'Package' -Target $relDir -Description '[外部 repo / opt-in] 関連侵害パッケージを削除' -Command "Remove-Item -LiteralPath '$relDir' -Recurse -Force" -Phase 'IOC-Cleanup' -Mode $mode
+                }
+            }
+
+            Plan-Action -Category 'Info' `
+                -Target $path `
+                -Description '[外部 repo / opt-in] node_modules 配下のローカル cleanup のみ実行。package.json / lockfile は変更しません' `
+                -Command "Write-Host '[INFO] external repo local cleanup mode: $path'" `
+                -Phase 'ReportOnly' -Mode $mode
+        }
+
+        'ReportOnly' {
+            # デフォルト: 外部/不明リポジトリには一切変更しない
+            Plan-Action -Category 'Info' `
+                -Target $path `
+                -Description ('[外部 repo] 自動変更は行いません。手順案内のみ生成します (所有者: ' + $projOwnership + ')') `
+                -Command "Write-Host '[INFO] report-only: $path'" `
+                -Phase 'ReportOnly' -Mode $mode
+        }
     }
 }
 
 # --- npm cache clean ---
-if ($actions.Count -gt 0) {
-    Plan-Action -Category 'Cache' -Target 'npm cache' -Description 'npm キャッシュをクリア（侵害版の再インストール防止）' -Command 'npm cache clean --force 2>&1'
+$hasActualActions = @($actions | Where-Object { $_.Category -ne 'Info' }).Count -gt 0
+if ($hasActualActions) {
+    Plan-Action -Category 'Cache' -Target 'npm cache' -Description 'npm キャッシュをクリア（侵害版の再インストール防止）' -Command 'npm cache clean --force 2>&1' -Phase 'Cleanup'
 }
 
 # --- 手動アクション ---
@@ -206,6 +310,42 @@ if ($highIocs.Count -gt 0) {
     [void]$manualActions.Add('')
 }
 
+# --- 外部/不明リポジトリ向け手順案内 ---
+$externalProjects = @($remediationTargets | Where-Object {
+    $own = if ($_.PSObject.Properties['Ownership']) { $_.Ownership } else { 'Unknown' }
+    $own -ne 'Mine'
+})
+
+if ($externalProjects.Count -gt 0) {
+    $nextManualNum = if ($highIocs.Count -gt 0) { 6 } else { 5 }
+    [void]$manualActions.Add('[ ] ' + $nextManualNum + '. 外部/不明リポジトリの手動対応')
+    [void]$manualActions.Add('')
+    [void]$manualActions.Add('     以下のリポジトリは自動修復の対象外です。')
+    [void]$manualActions.Add('     upstream の maintainer に報告し、以下の手順で対応してください。')
+    [void]$manualActions.Add('')
+    foreach ($ep in $externalProjects) {
+        $epOwn = if ($ep.PSObject.Properties['Ownership']) { $ep.Ownership } else { 'Unknown' }
+        [void]$manualActions.Add('     [' + $epOwn + '] ' + $ep.Path)
+    }
+    [void]$manualActions.Add('')
+    [void]$manualActions.Add('     対応手順:')
+    [void]$manualActions.Add('       1. upstream maintainer に侵害を報告')
+    [void]$manualActions.Add('       2. node_modules を全削除: Remove-Item -LiteralPath .\node_modules -Recurse -Force')
+    [void]$manualActions.Add('       3. npm ci --ignore-scripts で再インストール')
+    [void]$manualActions.Add('       4. それでも侵害版が入る場合は利用停止を検討')
+    [void]$manualActions.Add('')
+
+    $nextManualNum++
+    [void]$manualActions.Add('[ ] ' + $nextManualNum + '. 0.x 系 axios を使用しているプロジェクトの対応')
+    [void]$manualActions.Add('')
+    [void]$manualActions.Add('     0.x 系は backport の修正版が未確定のため、自動 remediation は行いません。')
+    [void]$manualActions.Add('     以下のいずれかで対応してください:')
+    [void]$manualActions.Add('       - upstream maintainer に確認し、修正版がリリースされたら更新')
+    [void]$manualActions.Add('       - axios 1.x 系への移行を検討')
+    [void]$manualActions.Add('       - 侵害版 (0.30.4) がインストールされていないことを確認し、当面は現行版を維持')
+    [void]$manualActions.Add('')
+}
+
 # ============================================================
 # ドライラン表示
 # ============================================================
@@ -213,19 +353,47 @@ $dryRunReport = New-Object System.Collections.ArrayList
 [void]$dryRunReport.Add('========================================')
 [void]$dryRunReport.Add('  修復アクション一覧（ドライラン）')
 [void]$dryRunReport.Add("  生成日時: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+[void]$dryRunReport.Add('')
+[void]$dryRunReport.Add('  Remediation Policy:')
+[void]$dryRunReport.Add('    - 1.x 系: 自動 remediation target = 1.15.0 (exact pin)')
+[void]$dryRunReport.Add('    - 0.x 系: 自動 remediation なし (manual-only)')
+[void]$dryRunReport.Add("    - ThirdParty repo mutation: $(if ($AllowThirdPartyRepoMutation) { 'Enabled' } else { 'Disabled (default)' })")
+[void]$dryRunReport.Add("    - Unknown repo mutation:    $(if ($AllowUnknownRepoMutation) { 'Enabled' } else { 'Disabled (default)' })")
 [void]$dryRunReport.Add('========================================')
 [void]$dryRunReport.Add('')
 
-$actionIndex = 0
-foreach ($a in $actions) {
-    $actionIndex++
-    [void]$dryRunReport.Add("  [$actionIndex] $($a.Category)")
-    [void]$dryRunReport.Add("      対象: $($a.Target)")
-    [void]$dryRunReport.Add("      操作: $($a.Description)")
-    [void]$dryRunReport.Add('')
+# フェーズごとにグループ表示
+$phaseOrder = @('SystemIOC', 'IOC-Cleanup', 'MetadataOnly', 'Reinstall', 'Verify', 'ReportOnly', 'Cleanup')
+$phaseLabels = @{
+    'SystemIOC'    = 'システムレベル IOC 除去'
+    'IOC-Cleanup'  = 'パッケージレベル IOC 除去'
+    'MetadataOnly' = 'Phase A: lockfile + exact pin 更新'
+    'Reinstall'    = 'Phase B: クリーン再構築'
+    'Verify'       = 'Phase C: 署名検証'
+    'ReportOnly'   = 'レポートのみ（自動変更なし）'
+    'Cleanup'      = 'キャッシュクリーンアップ'
 }
 
-[void]$dryRunReport.Add("  合計: $($actions.Count) 件の自動修復アクション")
+$actionIndex = 0
+foreach ($phase in $phaseOrder) {
+    $phaseActions = @($actions | Where-Object { $_.Phase -eq $phase })
+    if ($phaseActions.Count -eq 0) { continue }
+
+    $label = if ($phaseLabels.ContainsKey($phase)) { $phaseLabels[$phase] } else { $phase }
+    [void]$dryRunReport.Add("  --- $label ---")
+    [void]$dryRunReport.Add('')
+
+    foreach ($a in $phaseActions) {
+        $actionIndex++
+        $modeTag = if ($a.Mode) { " [$($a.Mode)]" } else { '' }
+        [void]$dryRunReport.Add("  [$actionIndex] $($a.Category)$modeTag")
+        [void]$dryRunReport.Add("      対象: $($a.Target)")
+        [void]$dryRunReport.Add("      操作: $($a.Description)")
+        [void]$dryRunReport.Add('')
+    }
+}
+
+[void]$dryRunReport.Add("  合計: $($actions.Count) 件のアクション (うち自動実行: $((@($actions | Where-Object { $_.Category -ne 'Info' }).Count)) 件)")
 [void]$dryRunReport.Add('')
 
 $dryRunReport | Out-File -FilePath $dryRunTxt -Encoding UTF8
@@ -238,14 +406,24 @@ Write-Host '========================================' -ForegroundColor Cyan
 Write-Host ''
 
 $actionIndex = 0
-foreach ($a in $actions) {
-    $actionIndex++
-    Write-Host "  [$actionIndex] $($a.Description)" -ForegroundColor Yellow
-    Write-Host "      対象: $($a.Target)"
+foreach ($phase in $phaseOrder) {
+    $phaseActions = @($actions | Where-Object { $_.Phase -eq $phase })
+    if ($phaseActions.Count -eq 0) { continue }
+
+    $label = if ($phaseLabels.ContainsKey($phase)) { $phaseLabels[$phase] } else { $phase }
+    Write-Host "  --- $label ---" -ForegroundColor Magenta
     Write-Host ''
+
+    foreach ($a in $phaseActions) {
+        $actionIndex++
+        $color = if ($a.Category -eq 'Info') { 'DarkGray' } else { 'Yellow' }
+        Write-Host "  [$actionIndex] $($a.Description)" -ForegroundColor $color
+        Write-Host "      対象: $($a.Target)"
+        Write-Host ''
+    }
 }
 
-Write-Host "  合計: $($actions.Count) 件の自動修復アクション" -ForegroundColor Cyan
+Write-Host "  合計: $($actions.Count) 件のアクション (うち自動実行: $((@($actions | Where-Object { $_.Category -ne 'Info' }).Count)) 件)" -ForegroundColor Cyan
 Write-Host ''
 
 # ============================================================
@@ -284,8 +462,18 @@ Write-Host ''
 
 $successCount = 0
 $failCount = 0
+$skipCount = 0
 
 foreach ($a in $actions) {
+    # Info カテゴリは実行せずスキップ
+    if ($a.Category -eq 'Info') {
+        $a.Status = 'Skipped'
+        $skipCount++
+        Write-Host "  スキップ: $($a.Description)" -ForegroundColor DarkGray
+        Log-Action -Category $a.Category -Target $a.Target -Description $a.Description -Status 'Skipped' -Detail 'レポートのみ'
+        continue
+    }
+
     Write-Host "  実行中: $($a.Description)..." -NoNewline
     try {
         $savedEnc = [Console]::OutputEncoding
@@ -318,7 +506,14 @@ $manualActions | Out-File -FilePath $manualTxt -Encoding UTF8
     "ManualActions.txt  : $manualTxt",
     "TotalActions       : $($actions.Count)",
     "Succeeded          : $successCount",
-    "Failed             : $failCount"
+    "Failed             : $failCount",
+    "Skipped            : $skipCount",
+    '',
+    'Remediation Policy:',
+    '  1.x target       : 1.15.0 (exact pin)',
+    '  0.x target       : manual-only (backport pending)',
+    "  ThirdParty repos : $(if ($AllowThirdPartyRepoMutation) { 'LocalCleanup (opt-in)' } else { 'ReportOnly (default)' })",
+    "  Unknown repos    : $(if ($AllowUnknownRepoMutation) { 'LocalCleanup (opt-in)' } else { 'ReportOnly (default)' })"
 ) | Out-File -FilePath $summaryTxt -Encoding UTF8
 
 Write-Host ''
@@ -328,6 +523,7 @@ Write-Host '========================================' -ForegroundColor Cyan
 Write-Host ''
 Write-Host "  成功: $successCount 件" -ForegroundColor Green
 Write-Host "  失敗: $failCount 件" -ForegroundColor $(if ($failCount -gt 0) { 'Red' } else { 'Green' })
+Write-Host "  スキップ: $skipCount 件 (レポートのみ)" -ForegroundColor DarkGray
 Write-Host ''
 Write-Host "  修復ログ: $remediationLog"
 Write-Host "  手動対応: $manualTxt"

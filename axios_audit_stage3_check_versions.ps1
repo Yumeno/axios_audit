@@ -41,16 +41,72 @@ function Add-Result {
         [string]$Status,
         [string]$AxiosVersion,
         [string]$Evidence,
-        [string]$RawOutput
+        [string]$RawOutput,
+        [string]$DetectedCves = '',
+        [string]$RecommendedTargetVersion = '',
+        [string]$CanAutoRemediate = ''
     )
     [void]$results.Add([pscustomobject]@{
-        RepoPath = $RepoPath
-        Status = $Status
-        AxiosVersion = $AxiosVersion
-        Evidence = $Evidence
-        RawOutput = $RawOutput
+        RepoPath                 = $RepoPath
+        Status                   = $Status
+        AxiosVersion             = $AxiosVersion
+        Evidence                 = $Evidence
+        RawOutput                = $RawOutput
+        DetectedCves             = $DetectedCves
+        RecommendedTargetVersion = $RecommendedTargetVersion
+        CanAutoRemediate         = $CanAutoRemediate
     })
     $stats.Findings++
+}
+
+# --- 既知 CVE 脆弱性判定 ---
+# CVE-2025-27152: SSRF via absolute URL — < 1.8.2 (1.x), < 0.30.0 (0.x)
+# CVE-2025-62718: NO_PROXY bypass SSRF — < 1.15.0 (全バージョン)
+function Get-VersionVulnerabilityInfo {
+    param([string]$Version)
+
+    # バージョンを数値比較用にパース
+    if ($Version -notmatch '^(\d+)\.(\d+)\.(\d+)') { return $null }
+    $major = [int]$Matches[1]; $minor = [int]$Matches[2]; $patch = [int]$Matches[3]
+
+    # 侵害版は別ステータスで処理するため除外
+    if ($Version -eq '1.14.1' -or $Version -eq '0.30.4') { return $null }
+
+    $cves = New-Object System.Collections.ArrayList
+
+    if ($major -ge 1) {
+        # 1.x 系
+        if ($major -eq 1 -and ($minor -lt 8 -or ($minor -eq 8 -and $patch -lt 2))) {
+            # < 1.8.2
+            [void]$cves.Add('CVE-2025-27152')
+        }
+        if ($major -eq 1 -and $minor -lt 15) {
+            # < 1.15.0
+            [void]$cves.Add('CVE-2025-62718')
+        }
+        if ($cves.Count -gt 0) {
+            return @{
+                DetectedCves             = $cves -join ';'
+                RecommendedTargetVersion = '1.15.0'
+                CanAutoRemediate         = 'true'
+            }
+        }
+    } else {
+        # 0.x 系
+        if ($minor -lt 30 -or ($minor -eq 30 -and $patch -lt 0)) {
+            # < 0.30.0
+            [void]$cves.Add('CVE-2025-27152')
+        }
+        # CVE-2025-62718 は < 1.15.0 全体が対象 — 0.x は全て該当
+        [void]$cves.Add('CVE-2025-62718')
+        return @{
+            DetectedCves             = $cves -join ';'
+            RecommendedTargetVersion = ''
+            CanAutoRemediate         = 'false'
+        }
+    }
+
+    return $null
 }
 
 # nvm for Windows が管理する Node.js パスを PATH に追加
@@ -121,10 +177,22 @@ foreach ($root in $roots) {
 
         $matchResults = [regex]::Matches($raw, 'axios@([0-9]+(?:\.[0-9]+){1,3})')
         if ($matchResults.Count -gt 0) {
-            $versions = $matchResults | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique
-            foreach ($v in $versions) {
-                $status = if ($v -in @('1.14.1','0.30.4')) { 'HighRiskVersionFound' } else { 'ObservedVersion' }
-                Add-Result -RepoPath $root -Status $status -AxiosVersion $v -Evidence 'npm list axios --all' -RawOutput ($raw.Trim())
+            $detectedVersions = $matchResults | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique
+            foreach ($v in $detectedVersions) {
+                if ($v -in @('1.14.1','0.30.4')) {
+                    Add-Result -RepoPath $root -Status 'HighRiskVersionFound' -AxiosVersion $v -Evidence 'npm list axios --all' -RawOutput ($raw.Trim())
+                } else {
+                    $vulnInfo = Get-VersionVulnerabilityInfo -Version $v
+                    if ($null -ne $vulnInfo) {
+                        Add-Result -RepoPath $root -Status 'VulnerableVersionFound' -AxiosVersion $v `
+                            -Evidence 'npm list axios --all' -RawOutput ($raw.Trim()) `
+                            -DetectedCves $vulnInfo.DetectedCves `
+                            -RecommendedTargetVersion $vulnInfo.RecommendedTargetVersion `
+                            -CanAutoRemediate $vulnInfo.CanAutoRemediate
+                    } else {
+                        Add-Result -RepoPath $root -Status 'ObservedVersion' -AxiosVersion $v -Evidence 'npm list axios --all' -RawOutput ($raw.Trim())
+                    }
+                }
             }
         } else {
             if ($raw -match '\(empty\)') {
