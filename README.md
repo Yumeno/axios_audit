@@ -48,7 +48,29 @@ powershell -ExecutionPolicy Bypass -File .\axios_audit_run_all.ps1
 powershell -ExecutionPolicy Bypass -File .\axios_audit_run_all.ps1 -ScanPaths "C:\Users\me\projects","D:\repos"
 ```
 
-### 侵害が見つかった場合の修復
+### 診断結果の見方と次のアクション
+
+Stage 6 の完了後、各プロジェクトに以下の判定が付きます。
+
+| 判定 | 意味 | 次にやること |
+|------|------|------------|
+| **[侵害確定]** | マルウェア入り axios (`1.14.1` / `0.30.4`) の痕跡あり | **すぐに Stage 7 を実行**。修復後、全シークレットをローテーション |
+| **[脆弱性]** | 既知の CVE に脆弱な axios バージョンを使用中 | **Stage 7 を実行**して `1.15.0` にアップグレード |
+| **[要確認]** | npm が使えず、バージョンを確認できなかった等 | `AuditVerdict.txt` の理由を読んで手動確認 |
+| **[要強化]** | 侵害も脆弱性もないが、npm の防御設定が不十分 | レポート末尾の防御策（`ignore-scripts` 等）を適用 |
+| **[対策不要]** | 問題なし | 何もしなくてよい |
+
+**検出する脆弱性:**
+
+| CVE | 影響 | 脆弱なバージョン | 修正版 |
+|-----|------|-----------------|--------|
+| サプライチェーン攻撃 (3/31) | RAT ドロッパー | `1.14.1`, `0.30.4` | 削除済み |
+| CVE-2025-27152 | SSRF + 認証情報漏洩 | 1.x: `< 1.8.2` / 0.x: `< 0.30.0` | `1.8.2` / `0.30.0` |
+| CVE-2025-62718 | NO_PROXY バイパス SSRF | `< 1.15.0`（全バージョン） | `1.15.0` |
+
+### 修復（Stage 7/8）
+
+「侵害確定」または「脆弱性」が検出された場合に実行します。
 
 ```powershell
 # まずドライランで修復内容を確認
@@ -58,14 +80,15 @@ powershell -ExecutionPolicy Bypass -File .\axios_audit_run_all.ps1 -StartFrom 7 
 powershell -ExecutionPolicy Bypass -File .\axios_audit_run_all.ps1 -StartFrom 7 -AutoRemediate
 ```
 
-**修復ポリシー:**
+**修復の動作はリポジトリの所有者と axios のバージョンで決まります:**
 
-- **1.x 系:** 自動 remediation で `1.15.0` に exact pin（`--save-exact --package-lock-only` → `npm ci`）
-- **0.x 系:** backport 未確定のため自動 remediation なし（手順案内のみ）
-- **自作リポジトリ (`Mine`):** lockfile 更新 → クリーン再構築 → 署名検証の 3 段階
-- **他作/不明リポジトリ:** デフォルトで report-only（repo tree を変更しない）
+| 条件 | 動作 |
+|------|------|
+| 自作リポ + 1.x 系 | `1.15.0` に exact pin → クリーン再構築 → 署名検証（全自動） |
+| 自作リポ + 0.x 系 | 自動修復なし。1.x への移行または maintainer 確認を案内 |
+| 他作/不明リポ | デフォルトで report-only（repo tree を変更しない） |
 
-他作/不明リポジトリのローカル cleanup を許可する場合:
+他作/不明リポジトリのローカル cleanup（node_modules 内の IOC 除去のみ）を許可する場合:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\axios_audit_run_all.ps1 -StartFrom 7 -AutoRemediate -AllowThirdPartyRepoMutation
