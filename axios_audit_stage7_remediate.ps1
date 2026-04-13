@@ -63,11 +63,23 @@ $verdicts = Import-Csv $verdictCsv
 $iocs     = if (Test-Path $iocCsv) { Import-Csv $iocCsv } else { @() }
 $versionCsv = Join-Path $OutputDir 'AxiosVersionFindings.csv'
 $versions = if (Test-Path $versionCsv) { Import-Csv $versionCsv } else { @() }
-$compromisedProjects = @($verdicts | Where-Object { $_.Verdict -eq 'Compromised' })
+# RemediationDisposition が存在する場合はそちらを使用、なければ従来の Verdict ベース
+$hasDisposition = $verdicts.Count -gt 0 -and $verdicts[0].PSObject.Properties['RemediationDisposition']
+
+if ($hasDisposition) {
+    $remediationTargets = @($verdicts | Where-Object {
+        $_.RemediationDisposition -eq 'AutoUpgrade' -or
+        $_.RemediationDisposition -eq 'ManualReview' -or
+        $_.RemediationDisposition -eq 'ReportOnly' -and ($_.Verdict -eq 'Compromised' -or $_.Verdict -eq 'Vulnerable')
+    })
+} else {
+    $remediationTargets = @($verdicts | Where-Object { $_.Verdict -eq 'Compromised' })
+}
+
 $highIocs = @($iocs | Where-Object { $_.Severity -eq 'High' })
 
-if ($compromisedProjects.Count -eq 0 -and $highIocs.Count -eq 0) {
-    Write-Host '[INFO] 侵害確定のプロジェクトも高リスク IOC も検出されていません。修復は不要です。' -ForegroundColor Green
+if ($remediationTargets.Count -eq 0 -and $highIocs.Count -eq 0) {
+    Write-Host '[INFO] 修復が必要なプロジェクトも高リスク IOC も検出されていません。修復は不要です。' -ForegroundColor Green
     Stop-Transcript | Out-Null
     return
 }
@@ -137,7 +149,7 @@ try {
 } catch {}
 
 # --- プロジェクトレベル修復 ---
-foreach ($proj in $compromisedProjects) {
+foreach ($proj in $remediationTargets) {
     $path = $proj.Path
     $projOwnership = if ($proj.PSObject.Properties['Ownership']) { $proj.Ownership } else { 'Unknown' }
     $mode = Get-RepoRemediationMode `
@@ -299,7 +311,7 @@ if ($highIocs.Count -gt 0) {
 }
 
 # --- 外部/不明リポジトリ向け手順案内 ---
-$externalProjects = @($compromisedProjects | Where-Object {
+$externalProjects = @($remediationTargets | Where-Object {
     $own = if ($_.PSObject.Properties['Ownership']) { $_.Ownership } else { 'Unknown' }
     $own -ne 'Mine'
 })

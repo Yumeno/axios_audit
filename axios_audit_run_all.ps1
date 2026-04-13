@@ -276,25 +276,33 @@ $needsFix = $false
 $verdictCsv = Join-Path $outputDir 'AuditVerdict.csv'
 $iocCsv = Join-Path $outputDir 'IocFindings.csv'
 
+$needsVulnFix = $false
 if ($ok6 -and (Test-Path $verdictCsv)) {
     $vRows = Import-Csv $verdictCsv
     $compCount = @($vRows | Where-Object { $_.Verdict -eq 'Compromised' }).Count
+    $vulnCount = @($vRows | Where-Object { $_.Verdict -eq 'Vulnerable' }).Count
 
     $iocRows = if (Test-Path $iocCsv) { Import-Csv $iocCsv } else { @() }
     $hiCount = @($iocRows | Where-Object { $_.Severity -eq 'High' }).Count
 
     if ($compCount -gt 0 -or $hiCount -gt 0) { $needsFix = $true }
+    if ($vulnCount -gt 0) { $needsVulnFix = $true }
 }
 
 # -StartFrom 7 or 8 の場合は、オプションに関係なく実行する
 $explicitStage7 = ($StartFrom -eq 7)
 $explicitStage8 = ($StartFrom -eq 8)
 
-if ($needsFix -or $explicitStage7 -or $explicitStage8) {
+if ($needsFix -or $needsVulnFix -or $explicitStage7 -or $explicitStage8) {
     if ($needsFix) {
         Write-Host '========================================================' -ForegroundColor Red
         Write-Host '  侵害が検出されました' -ForegroundColor Red
         Write-Host '========================================================' -ForegroundColor Red
+        Write-Host ''
+    } elseif ($needsVulnFix) {
+        Write-Host '========================================================' -ForegroundColor Yellow
+        Write-Host '  既知の脆弱性を持つ axios バージョンが検出されました' -ForegroundColor Yellow
+        Write-Host '========================================================' -ForegroundColor Yellow
         Write-Host ''
     }
 
@@ -353,7 +361,7 @@ if ($needsFix -or $explicitStage7 -or $explicitStage8) {
     }
 } else {
     Write-Sep
-    Write-Host '  Stage 7 - 修復 [SKIP] 侵害未検出のため修復不要' -ForegroundColor Green
+    Write-Host '  Stage 7 - 修復 [SKIP] 侵害・脆弱性ともに未検出のため修復不要' -ForegroundColor Green
     Write-Host '  Stage 8 - 修復後検証 [SKIP] 修復不要' -ForegroundColor Green
     Write-Sep
     Write-Host ''
